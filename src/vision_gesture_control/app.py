@@ -50,18 +50,30 @@ MODE_SEQUENCE = ["presentation", "video", "youtube"]
 
 ACTION_LABELS = {
     "toggle_mode": "Cycle mode",
-    "next_slide": "Next slide",
-    "previous_slide": "Previous slide",
-    "start_slideshow": "Start slideshow",
-    "exit_slideshow": "Exit slideshow",
+    "next_slide": "Next",
+    "previous_slide": "Previous",
+    "start_slideshow": "Start show",
+    "exit_slideshow": "Exit",
     "play_pause": "Play/Pause",
-    "volume_up": "Volume up",
-    "volume_down": "Volume down",
-    "mute_toggle": "Mute/Unmute",
-    "seek_forward": "Seek forward",
-    "seek_backward": "Seek backward",
-    "speed_up": "Speed up",
-    "speed_down": "Speed down",
+    "volume_up": "Vol +",
+    "volume_down": "Vol -",
+    "mute_toggle": "Mute",
+    "seek_forward": "Forward",
+    "seek_backward": "Back",
+    "speed_up": "Speed +",
+    "speed_down": "Speed -",
+}
+
+GESTURE_LABELS = {
+    "Closed_Fist": "Fist",
+    "Open_Palm": "Palm",
+    "Pointing_Up": "Point",
+    "Thumb_Down": "Thumb down",
+    "Thumb_Up": "Thumb up",
+    "Victory": "Victory",
+    "ILoveYou": "I love you",
+    "Swipe_Right": "Swipe right",
+    "Swipe_Left": "Swipe left",
 }
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -114,7 +126,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "ui": {
         "show_legend": True,
         "show_performance": True,
-        "overlay_alpha": 0.58,
+        "overlay_alpha": 0.68,
+        "legend_position": "auto",
+        "performance_position": "bottom_left",
     },
     "mode": "presentation",
     "bindings": {
@@ -1382,6 +1396,110 @@ def action_label(action: str) -> str:
     return ACTION_LABELS.get(action, action.replace("_", " ").title())
 
 
+def gesture_label(gesture: str) -> str:
+    return GESTURE_LABELS.get(gesture, gesture.replace("_", " "))
+
+
+def panel_size(
+    frame: np.ndarray,
+    lines: List[str],
+    font_scale: float,
+    line_height: int,
+    padding: int,
+) -> Tuple[int, int]:
+    if not lines:
+        return 0, 0
+    widths = [
+        cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)[0][0]
+        for line in lines
+    ]
+    panel_w = min(max(widths) + padding * 2, frame.shape[1] - 20)
+    panel_h = len(lines) * line_height + padding * 2
+    return panel_w, panel_h
+
+
+def clamp_rect(
+    frame: np.ndarray,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    margin: int = 10,
+) -> Tuple[int, int, int, int]:
+    x = max(margin, min(x, frame.shape[1] - width - margin))
+    y = max(margin, min(y, frame.shape[0] - height - margin))
+    return x, y, x + width, y + height
+
+
+def rect_overlap_area(
+    a: Tuple[int, int, int, int],
+    b: Tuple[int, int, int, int],
+) -> int:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    return max(0, ix2 - ix1) * max(0, iy2 - iy1)
+
+
+def expanded_track_rects(
+    frame: np.ndarray,
+    tracks: List[FaceTrack],
+) -> List[Tuple[int, int, int, int]]:
+    rects = []
+    for track in tracks:
+        x1, y1, x2, y2 = track.bbox
+        rects.append(
+            (
+                max(0, x1 - 14),
+                max(0, y1 - 36),
+                min(frame.shape[1], x2 + 14),
+                min(frame.shape[0], y2 + 14),
+            )
+        )
+    return rects
+
+
+def choose_panel_rect(
+    frame: np.ndarray,
+    panel_w: int,
+    panel_h: int,
+    reserved: List[Tuple[int, int, int, int]],
+    preferred: str,
+) -> Tuple[int, int, int, int]:
+    margin = 14
+    top_y = 66
+    candidates = {
+        "top_left": (margin, top_y),
+        "top_right": (frame.shape[1] - panel_w - margin, top_y),
+        "bottom_left": (margin, frame.shape[0] - panel_h - margin),
+        "bottom_right": (
+            frame.shape[1] - panel_w - margin,
+            frame.shape[0] - panel_h - margin,
+        ),
+    }
+
+    if preferred in candidates:
+        x, y = candidates[preferred]
+        return clamp_rect(frame, x, y, panel_w, panel_h, margin)
+
+    best_rect = None
+    best_score = None
+    for name in ("bottom_right", "top_right", "bottom_left", "top_left"):
+        x, y = candidates[name]
+        rect = clamp_rect(frame, x, y, panel_w, panel_h, margin)
+        overlap = sum(rect_overlap_area(rect, item) for item in reserved)
+        lower_bonus = 0 if name.startswith("bottom") else 250
+        score = overlap + lower_bonus
+        if best_score is None or score < best_score:
+            best_rect = rect
+            best_score = score
+
+    return best_rect if best_rect is not None else clamp_rect(frame, margin, top_y, panel_w, panel_h)
+
+
 def draw_text_panel(
     frame: np.ndarray,
     lines: List[str],
@@ -1389,33 +1507,27 @@ def draw_text_panel(
     y: int,
     alpha: float,
     font_scale: float = 0.46,
-) -> None:
+    line_height: int = 18,
+    padding: int = 8,
+) -> Tuple[int, int, int, int]:
     if not lines:
-        return
+        return 0, 0, 0, 0
 
-    padding = 8
-    line_height = 19
-    widths = [
-        cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)[0][0]
-        for line in lines
-    ]
-    panel_w = min(max(widths) + padding * 2, frame.shape[1] - 20)
-    panel_h = len(lines) * line_height + padding * 2
-    x = max(10, min(x, frame.shape[1] - panel_w - 10))
-    y = max(10, min(y, frame.shape[0] - panel_h - 10))
+    panel_w, panel_h = panel_size(frame, lines, font_scale, line_height, padding)
+    x1, y1, x2, y2 = clamp_rect(frame, x, y, panel_w, panel_h)
 
     overlay = frame.copy()
-    cv2.rectangle(overlay, (x, y), (x + panel_w, y + panel_h), (15, 15, 15), -1)
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (12, 12, 12), -1)
     cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
-    cv2.rectangle(frame, (x, y), (x + panel_w, y + panel_h), (80, 80, 80), 1)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (95, 95, 95), 1)
 
-    text_y = y + padding + 14
+    text_y = y1 + padding + 13
     for idx, line in enumerate(lines):
         color = (220, 220, 220) if idx else (255, 255, 255)
         cv2.putText(
             frame,
             line,
-            (x + padding, text_y),
+            (x1 + padding, text_y),
             cv2.FONT_HERSHEY_SIMPLEX,
             font_scale,
             color,
@@ -1423,47 +1535,95 @@ def draw_text_panel(
             cv2.LINE_AA,
         )
         text_y += line_height
+    return x1, y1, x2, y2
 
 
 def gesture_legend_lines(config: Dict[str, Any], mode: str) -> List[str]:
     bindings = config.get("bindings", {})
     mode_bindings = bindings.get(mode, {})
-    lines = [f"Gestures: {mode}"]
+    lines = [f"{mode.title()} controls"]
 
     global_bindings = bindings.get("global", {})
-    for gesture, action in sorted(global_bindings.items()):
-        lines.append(f"{gesture}: {action_label(action)}")
+    for gesture, action in global_bindings.items():
+        lines.append(f"{gesture_label(gesture)} -> {action_label(action)}")
 
-    for gesture, action in sorted(mode_bindings.items()):
-        lines.append(f"{gesture}: {action_label(action)}")
+    for gesture, action in mode_bindings.items():
+        lines.append(f"{gesture_label(gesture)} -> {action_label(action)}")
 
     if bool(config["gestures"].get("arming", {}).get("enabled", True)):
         arm_gesture = config["gestures"]["arming"].get("gesture", "Open_Palm")
-        lines.append(f"Arm: hold {arm_gesture}")
+        lines.append(f"Arm: hold {gesture_label(arm_gesture)}")
     return lines
 
 
-def draw_legend(frame: np.ndarray, config: Dict[str, Any], mode: str) -> None:
+def draw_legend(
+    frame: np.ndarray,
+    config: Dict[str, Any],
+    mode: str,
+    tracks: List[FaceTrack],
+) -> None:
     if not bool(config.get("ui", {}).get("show_legend", True)):
         return
     lines = gesture_legend_lines(config, mode)
     alpha = float(config.get("ui", {}).get("overlay_alpha", 0.58))
-    draw_text_panel(frame, lines, frame.shape[1] - 310, 78, alpha)
+    font_scale = 0.42
+    line_height = 16
+    padding = 7
+    panel_w, panel_h = panel_size(frame, lines, font_scale, line_height, padding)
+    reserved = expanded_track_rects(frame, tracks)
+    reserved.append((0, 0, frame.shape[1], 58))
+    if bool(config.get("ui", {}).get("show_performance", True)):
+        reserved.append((12, frame.shape[0] - 62, 310, frame.shape[0] - 12))
+    x1, y1, _, _ = choose_panel_rect(
+        frame,
+        panel_w,
+        panel_h,
+        reserved,
+        str(config.get("ui", {}).get("legend_position", "auto")),
+    )
+    draw_text_panel(
+        frame,
+        lines,
+        x1,
+        y1,
+        alpha,
+        font_scale=font_scale,
+        line_height=line_height,
+        padding=padding,
+    )
 
 
 def draw_performance(frame: np.ndarray, config: Dict[str, Any], stats: PerformanceStats) -> None:
     if not bool(config.get("ui", {}).get("show_performance", True)):
         return
     lines = [
-        "Performance",
-        f"FPS: {stats.fps:.1f}",
-        f"Detect: {stats.detect_ms:.1f} ms",
-        f"Track/ID: {stats.tracking_ms:.1f} ms",
-        f"Gesture lag: {stats.gesture_latency_ms:.0f} ms",
-        f"Action: {stats.action_ms:.1f} ms",
+        f"FPS {stats.fps:.1f} | Detect {stats.detect_ms:.0f} ms",
+        (
+            f"Track {stats.tracking_ms:.1f} ms | "
+            f"Lag {stats.gesture_latency_ms:.0f} | Action {stats.action_ms:.1f}"
+        ),
     ]
     alpha = float(config.get("ui", {}).get("overlay_alpha", 0.58))
-    draw_text_panel(frame, lines, 20, frame.shape[0] - 138, alpha, font_scale=0.45)
+    font_scale = 0.40
+    line_height = 15
+    padding = 7
+    panel_w, panel_h = panel_size(frame, lines, font_scale, line_height, padding)
+    position = str(config.get("ui", {}).get("performance_position", "bottom_left"))
+    if position == "bottom_right":
+        x = frame.shape[1] - panel_w - 14
+    else:
+        x = 14
+    y = frame.shape[0] - panel_h - 14
+    draw_text_panel(
+        frame,
+        lines,
+        x,
+        y,
+        alpha,
+        font_scale=font_scale,
+        line_height=line_height,
+        padding=padding,
+    )
 
 
 def draw_status(
@@ -1476,24 +1636,31 @@ def draw_status(
 ) -> None:
     color = (0, 220, 0) if tracker.active_track(time.time()) else (0, 0, 255)
     dry_run = " | DRY RUN" if bool(action_controller.config["external_controls"].get("dry_run", False)) else ""
+    status_text = f"{tracker.lock_reason} | Mode: {action_controller.mode}{dry_run}"
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (frame.shape[1], 50), (12, 12, 12), -1)
+    cv2.addWeighted(overlay, 0.56, frame, 0.44, 0, frame)
     cv2.putText(
         frame,
-        f"{tracker.lock_reason} | Mode: {action_controller.mode}{dry_run}",
-        (20, 28),
+        status_text[:78],
+        (16, 23),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.65,
+        0.52,
         color,
         2,
+        cv2.LINE_AA,
     )
     if not gesture_engine.enabled:
         cv2.putText(
             frame,
             "Gestures disabled: install mediapipe and rerun",
-            (20, 56),
+            (16, 42),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
+            0.42,
             (0, 0, 255),
-            2,
+            1,
+            cv2.LINE_AA,
         )
     else:
         status_parts = []
@@ -1506,12 +1673,13 @@ def draw_status(
             return
         cv2.putText(
             frame,
-            status[:105],
-            (20, 56),
+            status[:95],
+            (16, 42),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
+            0.42,
             (255, 255, 255),
-            2,
+            1,
+            cv2.LINE_AA,
         )
 
 
@@ -1811,7 +1979,7 @@ def main() -> None:
             draw_faces(frame, tracks, tracker.active_track_id)
             draw_hand(frame, gesture.landmarks if authorized else [])
             draw_status(frame, tracker, action_controller, gesture_status, gesture_engine, armer)
-            draw_legend(frame, config, action_controller.mode)
+            draw_legend(frame, config, action_controller.mode, tracks)
             draw_performance(frame, config, stats)
             draw_capture_status(
                 frame,

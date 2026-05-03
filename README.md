@@ -218,6 +218,8 @@ Common settings:
 | `external_controls.profiles` | Action-to-key mapping |
 | `ui.show_legend` | Show/hide gesture legend |
 | `ui.show_performance` | Show/hide FPS/performance stats |
+| `ui.legend_position` | Legend placement: `auto`, `top_left`, `top_right`, `bottom_left`, `bottom_right` |
+| `ui.performance_position` | Performance panel placement: `bottom_left` or `bottom_right` |
 
 ## Add Or Change A Gesture Binding
 
