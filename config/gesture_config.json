@@ -1,0 +1,186 @@
+{
+  "bindings": {
+    "global": {
+      "ILoveYou": "toggle_mode"
+    },
+    "presentation": {
+      "Closed_Fist": "exit_slideshow",
+      "Thumb_Down": "previous_slide",
+      "Thumb_Up": "next_slide",
+      "Victory": "start_slideshow"
+    },
+    "video": {
+      "Closed_Fist": "speed_down",
+      "Open_Palm": "play_pause",
+      "Pointing_Up": "mute_toggle",
+      "Swipe_Left": "seek_backward",
+      "Swipe_Right": "seek_forward",
+      "Thumb_Down": "volume_down",
+      "Thumb_Up": "volume_up",
+      "Victory": "speed_up"
+    },
+    "youtube": {
+      "Closed_Fist": "speed_down",
+      "Open_Palm": "play_pause",
+      "Pointing_Up": "mute_toggle",
+      "Swipe_Left": "seek_backward",
+      "Swipe_Right": "seek_forward",
+      "Thumb_Down": "volume_down",
+      "Thumb_Up": "volume_up",
+      "Victory": "speed_up"
+    }
+  },
+  "camera": {
+    "fallback_index": 1,
+    "fps": 30,
+    "height": 540,
+    "mirror": true,
+    "primary_index": 0,
+    "width": 960
+  },
+  "emotion": {
+    "enabled": true,
+    "min_interval_seconds": 1.5
+  },
+  "external_controls": {
+    "active_profiles": {
+      "presentation": "powerpoint",
+      "video": "generic_video",
+      "youtube": "youtube_video"
+    },
+    "dry_run": false,
+    "enabled": true,
+    "focus_before_action": true,
+    "profiles": {
+      "generic_video": {
+        "mute_toggle": [
+          "volumemute"
+        ],
+        "play_pause": [
+          "space"
+        ],
+        "seek_backward": [
+          "left"
+        ],
+        "seek_forward": [
+          "right"
+        ],
+        "speed_down": [
+          "["
+        ],
+        "speed_up": [
+          "]"
+        ],
+        "volume_down": [
+          "volumedown"
+        ],
+        "volume_up": [
+          "volumeup"
+        ]
+      },
+      "powerpoint": {
+        "exit_slideshow": [
+          "esc"
+        ],
+        "next_slide": [
+          "right"
+        ],
+        "previous_slide": [
+          "left"
+        ],
+        "start_slideshow": [
+          "f5"
+        ]
+      },
+      "youtube_video": {
+        "mute_toggle": [
+          "m"
+        ],
+        "play_pause": [
+          "space"
+        ],
+        "seek_backward": [
+          "left"
+        ],
+        "seek_forward": [
+          "right"
+        ],
+        "speed_down": [
+          "shift",
+          ","
+        ],
+        "speed_up": [
+          "shift",
+          "."
+        ],
+        "volume_down": [
+          "down"
+        ],
+        "volume_up": [
+          "up"
+        ]
+      }
+    },
+    "require_target_window": false,
+    "target_windows": {
+      "generic_video": [
+        "VLC",
+        "Media Player",
+        "Movies & TV",
+        "Films & TV"
+      ],
+      "powerpoint": [
+        "PowerPoint",
+        "Slide Show"
+      ],
+      "youtube_video": [
+        "YouTube",
+        "Chrome",
+        "Microsoft Edge",
+        "Firefox"
+      ]
+    }
+  },
+  "face": {
+    "active_grace_seconds": 1.25,
+    "ambiguous_rank_gap": 0.15,
+    "foreground_override_ratio": 1.12,
+    "nms_threshold": 0.3,
+    "score_threshold": 0.6,
+    "sface_cosine_threshold": 0.363,
+    "stable_seconds": 0.25,
+    "top_k": 5000,
+    "track_iou_threshold": 0.25,
+    "unknown_retry_seconds": 2.0
+  },
+  "gestures": {
+    "action_cooldown_seconds": 1.0,
+    "arming": {
+      "armed_seconds": 5.0,
+      "enabled": true,
+      "exempt_actions": [
+        "toggle_mode"
+      ],
+      "gesture": "Open_Palm",
+      "hold_seconds": 0.85,
+      "ready_delay_seconds": 0.35
+    },
+    "confidence_threshold": 0.55,
+    "custom_capture_interval_seconds": 0.45,
+    "custom_capture_samples": 5,
+    "custom_match_threshold": 0.2,
+    "enabled": true,
+    "stable_seconds": 0.35,
+    "swipe_hold_seconds": 0.55,
+    "swipe_max_dy": 0.14,
+    "swipe_min_duration_seconds": 0.12,
+    "swipe_min_dx": 0.16,
+    "swipe_window_seconds": 0.75
+  },
+  "mode": "presentation",
+  "ui": {
+    "overlay_alpha": 0.58,
+    "show_legend": true,
+    "show_performance": true
+  }
+}
