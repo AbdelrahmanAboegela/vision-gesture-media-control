@@ -177,6 +177,24 @@
     "swipe_min_dx": 0.16,
     "swipe_window_seconds": 0.75
   },
+  "liveness": {
+    "challenge_pool": [
+      "head_left",
+      "head_right",
+      "hand_thumb_up",
+      "hand_thumb_down",
+      "hand_victory",
+      "hand_fist",
+      "hand_point"
+    ],
+    "enabled": true,
+    "hand_confidence_threshold": 0.55,
+    "head_offset_threshold": 0.08,
+    "require_mixed_types": true,
+    "step_timeout_seconds": 7.0,
+    "steps_per_challenge": 2,
+    "success_hold_seconds": 0.35
+  },
   "mode": "presentation",
   "ui": {
     "legend_position": "auto",

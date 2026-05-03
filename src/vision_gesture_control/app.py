@@ -4,6 +4,7 @@ import json
 import math
 import os
 import queue
+import random
 import shutil
 import threading
 import time
@@ -76,6 +77,24 @@ GESTURE_LABELS = {
     "Swipe_Left": "Swipe left",
 }
 
+LIVENESS_PROMPTS = {
+    "head_left": "Turn head LEFT",
+    "head_right": "Turn head RIGHT",
+    "hand_thumb_up": "Show THUMB UP",
+    "hand_thumb_down": "Show THUMB DOWN",
+    "hand_victory": "Show VICTORY",
+    "hand_fist": "Show FIST",
+    "hand_point": "Point UP",
+}
+
+LIVENESS_HAND_GESTURES = {
+    "hand_thumb_up": "Thumb_Up",
+    "hand_thumb_down": "Thumb_Down",
+    "hand_victory": "Victory",
+    "hand_fist": "Closed_Fist",
+    "hand_point": "Pointing_Up",
+}
+
 DEFAULT_CONFIG: Dict[str, Any] = {
     "camera": {
         "primary_index": 0,
@@ -100,6 +119,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "emotion": {
         "enabled": True,
         "min_interval_seconds": 1.5,
+    },
+    "liveness": {
+        "enabled": True,
+        "steps_per_challenge": 2,
+        "require_mixed_types": True,
+        "step_timeout_seconds": 7.0,
+        "success_hold_seconds": 0.35,
+        "head_offset_threshold": 0.08,
+        "hand_confidence_threshold": 0.55,
+        "challenge_pool": [
+            "head_left",
+            "head_right",
+            "hand_thumb_up",
+            "hand_thumb_down",
+            "hand_victory",
+            "hand_fist",
+            "hand_point",
+        ],
     },
     "gestures": {
         "enabled": True,
@@ -413,6 +450,27 @@ def crop_face(frame: np.ndarray, bbox: Tuple[int, int, int, int]) -> Optional[np
     if crop.size == 0 or crop.shape[0] < 20 or crop.shape[1] < 20:
         return None
     return crop.copy()
+
+
+def face_landmarks(face: np.ndarray) -> List[Tuple[float, float]]:
+    if len(face) < 15:
+        return []
+    values = face[4:14]
+    return [
+        (float(values[i]), float(values[i + 1]))
+        for i in range(0, len(values), 2)
+    ]
+
+
+def nose_offset_ratio(track: FaceTrack) -> Optional[float]:
+    landmarks = face_landmarks(track.face)
+    if len(landmarks) < 3:
+        return None
+    nose_x, _ = landmarks[2]
+    x1, _, x2, _ = track.bbox
+    width = max(1.0, float(x2 - x1))
+    center_x = (x1 + x2) / 2.0
+    return (nose_x - center_x) / width
 
 
 class FaceIndex:
@@ -1121,6 +1179,165 @@ class ActionController:
         return self.last_focus_status
 
 
+class LivenessChallenge:
+    def __init__(self, config: Dict[str, Any]) -> None:
+        self.config = config
+        self.track_id: Optional[int] = None
+        self.identity = ""
+        self.steps: List[str] = []
+        self.step_index = 0
+        self.step_started_at = 0.0
+        self.hold_started_at = 0.0
+        self.passed = False
+        self.status = ""
+
+    def update(
+        self,
+        track: Optional[FaceTrack],
+        gesture: GestureFrame,
+        hand_ok: bool,
+        now: float,
+    ) -> bool:
+        if not self.enabled:
+            self.status = "Liveness disabled"
+            return track is not None and track.identity != "Unknown"
+
+        if track is None or track.identity == "Unknown":
+            self.reset("Waiting for authorized user")
+            return False
+
+        if now - track.last_seen > 0.35:
+            self.reset("Liveness reset: controller not visible")
+            return False
+
+        if self.track_id != track.track_id or self.identity != track.identity:
+            self._start(track, now)
+
+        if self.passed:
+            self.status = f"Liveness passed: {track.identity}"
+            return True
+
+        if now - self.step_started_at > float(self.config["liveness"]["step_timeout_seconds"]):
+            self._start(track, now)
+            self.status = "Liveness timeout - new challenge"
+            return False
+
+        step = self.steps[self.step_index]
+        prompt = LIVENESS_PROMPTS.get(step, step)
+        if self._step_satisfied(step, track, gesture, hand_ok):
+            if self.hold_started_at == 0.0:
+                self.hold_started_at = now
+            hold = float(self.config["liveness"]["success_hold_seconds"])
+            elapsed = now - self.hold_started_at
+            if elapsed >= hold:
+                self._advance(track, now)
+            else:
+                self.status = (
+                    f"Liveness {self.step_index + 1}/{len(self.steps)}: "
+                    f"hold {prompt} {elapsed:.1f}/{hold:.1f}s"
+                )
+            return self.passed
+
+        self.hold_started_at = 0.0
+        self.status = f"Liveness {self.step_index + 1}/{len(self.steps)}: {prompt}"
+        return False
+
+    def reset(self, status: str = "") -> None:
+        self.track_id = None
+        self.identity = ""
+        self.steps = []
+        self.step_index = 0
+        self.step_started_at = 0.0
+        self.hold_started_at = 0.0
+        self.passed = False
+        self.status = status
+
+    def is_verified_for(self, track: Optional[FaceTrack], now: float) -> bool:
+        if not self.enabled:
+            return track is not None and track.identity != "Unknown"
+        if track is None:
+            return False
+        return (
+            self.passed
+            and self.track_id == track.track_id
+            and self.identity == track.identity
+            and now - track.last_seen <= 0.35
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.config.get("liveness", {}).get("enabled", True))
+
+    def _start(self, track: FaceTrack, now: float) -> None:
+        self.track_id = track.track_id
+        self.identity = track.identity
+        self.steps = self._generate_steps()
+        self.step_index = 0
+        self.step_started_at = now
+        self.hold_started_at = 0.0
+        self.passed = False
+        self.status = f"Liveness required: {LIVENESS_PROMPTS.get(self.steps[0], self.steps[0])}"
+
+    def _generate_steps(self) -> List[str]:
+        cfg = self.config["liveness"]
+        pool = [
+            step
+            for step in cfg.get("challenge_pool", [])
+            if step in LIVENESS_PROMPTS
+        ]
+        if not pool:
+            pool = list(LIVENESS_PROMPTS.keys())
+
+        count = max(1, int(cfg.get("steps_per_challenge", 2)))
+        count = min(count, len(pool))
+        head_steps = [step for step in pool if step.startswith("head_")]
+        hand_steps = [step for step in pool if step.startswith("hand_")]
+
+        if bool(cfg.get("require_mixed_types", True)) and count >= 2 and head_steps and hand_steps:
+            selected = [random.choice(head_steps), random.choice(hand_steps)]
+            remaining = [step for step in pool if step not in selected]
+            if count > 2 and remaining:
+                selected.extend(random.sample(remaining, min(count - 2, len(remaining))))
+            random.shuffle(selected)
+            return selected[:count]
+
+        return random.sample(pool, count)
+
+    def _advance(self, track: FaceTrack, now: float) -> None:
+        self.step_index += 1
+        self.hold_started_at = 0.0
+        if self.step_index >= len(self.steps):
+            self.passed = True
+            self.status = f"Liveness passed: {track.identity}"
+            return
+        prompt = LIVENESS_PROMPTS.get(self.steps[self.step_index], self.steps[self.step_index])
+        self.step_started_at = now
+        self.status = f"Liveness {self.step_index + 1}/{len(self.steps)}: {prompt}"
+
+    def _step_satisfied(
+        self,
+        step: str,
+        track: FaceTrack,
+        gesture: GestureFrame,
+        hand_ok: bool,
+    ) -> bool:
+        if step == "head_left":
+            offset = nose_offset_ratio(track)
+            return offset is not None and offset < -float(self.config["liveness"]["head_offset_threshold"])
+        if step == "head_right":
+            offset = nose_offset_ratio(track)
+            return offset is not None and offset > float(self.config["liveness"]["head_offset_threshold"])
+
+        expected = LIVENESS_HAND_GESTURES.get(step)
+        if expected is None:
+            return False
+        return (
+            hand_ok
+            and gesture.name == expected
+            and gesture.score >= float(self.config["liveness"]["hand_confidence_threshold"])
+        )
+
+
 class GestureArmer:
     def __init__(self, config: Dict[str, Any]) -> None:
         self.config = config
@@ -1633,10 +1850,23 @@ def draw_status(
     gesture_status: str,
     gesture_engine: MediaPipeGestureEngine,
     armer: GestureArmer,
+    liveness: LivenessChallenge,
 ) -> None:
-    color = (0, 220, 0) if tracker.active_track(time.time()) else (0, 0, 255)
+    now = time.time()
+    active = tracker.active_track(now)
+    recognized = active is not None and active.identity != "Unknown"
+    live_verified = liveness.is_verified_for(active, now)
+    if recognized and liveness.enabled and not live_verified:
+        color = (0, 220, 255)
+        auth_text = f"Recognized: {active.identity} | Liveness required"
+    elif recognized:
+        color = (0, 220, 0)
+        auth_text = tracker.lock_reason
+    else:
+        color = (0, 0, 255)
+        auth_text = tracker.lock_reason
     dry_run = " | DRY RUN" if bool(action_controller.config["external_controls"].get("dry_run", False)) else ""
-    status_text = f"{tracker.lock_reason} | Mode: {action_controller.mode}{dry_run}"
+    status_text = f"{auth_text} | Mode: {action_controller.mode}{dry_run}"
 
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (frame.shape[1], 50), (12, 12, 12), -1)
@@ -1664,9 +1894,13 @@ def draw_status(
         )
     else:
         status_parts = []
-        if armer.status:
+        if liveness.enabled and recognized and not live_verified and liveness.status:
+            status_parts.append(liveness.status)
+        elif liveness.enabled and live_verified and liveness.status:
+            status_parts.append(liveness.status)
+        if armer.status and live_verified:
             status_parts.append(armer.status)
-        if gesture_status:
+        if gesture_status and (live_verified or not liveness.enabled or not recognized):
             status_parts.append(gesture_status)
         status = " | ".join(status_parts)
         if not status:
@@ -1815,6 +2049,7 @@ def main() -> None:
     gesture_engine = MediaPipeGestureEngine(config)
     motion_gestures = MotionGestureDetector(config)
     action_controller = ActionController(config)
+    liveness = LivenessChallenge(config)
     armer = GestureArmer(config)
     resolver = GestureCommandResolver(config, custom_store, action_controller)
     gesture_capture = GestureCaptureState()
@@ -1872,6 +2107,7 @@ def main() -> None:
             elif key == ord("r"):
                 face_index.reload()
                 tracker.reset_identities()
+                liveness.reset("Identity database reloaded")
                 gesture_status = "Identity database reloaded"
             elif key == ord("t"):
                 dry_run = action_controller.toggle_dry_run()
@@ -1881,6 +2117,7 @@ def main() -> None:
                 if person and delete_person_folder(DB_PATH, person):
                     face_index.reload()
                     tracker.reset_identities()
+                    liveness.reset(f"Deleted {person}")
                     gesture_status = f"Deleted {person}"
                     print(gesture_status)
             elif key == ord("a") and not capture_mode:
@@ -1918,6 +2155,7 @@ def main() -> None:
                         capture_mode = False
                         face_index.reload()
                         tracker.reset_identities()
+                        liveness.reset("New identity captured")
                         print(f"Finished capturing 5 profiles for {capture_name}.")
 
             active = tracker.active_track(now)
@@ -1928,8 +2166,8 @@ def main() -> None:
             for track in tracks:
                 track.emotion = emotion_worker.latest(track.track_id)
 
-            authorized = tracker.is_unlocked(now) and not capture_mode
-            if authorized:
+            recognized = tracker.is_unlocked(now) and not capture_mode
+            if recognized:
                 gesture_engine.submit(frame, timestamp_ms)
 
             gesture = gesture_engine.latest()
@@ -1939,6 +2177,9 @@ def main() -> None:
                     max(0.0, float(timestamp_ms - gesture.timestamp_ms)),
                 )
             hand_ok = tracker.hand_belongs_to_active(gesture.landmarks, frame.shape, now)
+            active_for_liveness = tracker.active_track(now) if recognized else None
+            liveness_passed = liveness.update(active_for_liveness, gesture, hand_ok, now)
+            authorized = recognized and liveness_passed
             motion_gesture = motion_gestures.process(gesture.landmarks, authorized, hand_ok, now)
             command_gesture = motion_gesture if motion_gesture is not None else gesture
             armer.observe(gesture, authorized, hand_ok, now)
@@ -1977,8 +2218,8 @@ def main() -> None:
                 resolver.process(command_gesture, False, False, now, armer=armer, stats=stats)
 
             draw_faces(frame, tracks, tracker.active_track_id)
-            draw_hand(frame, gesture.landmarks if authorized else [])
-            draw_status(frame, tracker, action_controller, gesture_status, gesture_engine, armer)
+            draw_hand(frame, gesture.landmarks if recognized else [])
+            draw_status(frame, tracker, action_controller, gesture_status, gesture_engine, armer, liveness)
             draw_legend(frame, config, action_controller.mode, tracks)
             draw_performance(frame, config, stats)
             draw_capture_status(
