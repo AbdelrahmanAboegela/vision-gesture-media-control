@@ -179,7 +179,9 @@
   },
   "mode": "presentation",
   "ui": {
+    "legend_position": "auto",
     "overlay_alpha": 0.58,
+    "performance_position": "bottom_left",
     "show_legend": true,
     "show_performance": true
   }
