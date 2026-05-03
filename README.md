@@ -14,7 +14,6 @@ The project was designed for a computer vision course task that extends face rec
 - Random liveness/anti-spoofing challenge before gesture control unlocks.
 - Presentation, local video, and YouTube control modes.
 - Swipe gestures for seek forward/backward.
-- Hold-to-arm safety before sending media commands.
 - Dry-run mode for testing gestures without pressing keys.
 - On-screen gesture legend and performance telemetry.
 - Face database reload and delete controls.
@@ -72,7 +71,7 @@ python -m pip install -r requirements.txt
 
 7. Complete the random liveness challenge shown in the overlay.
 
-8. Hold `Open_Palm` to arm commands, then use the gestures listed below.
+8. Use the gestures listed below.
 
 ## Project Layout
 
@@ -122,7 +121,7 @@ These files are excluded from git because they are downloaded runtime assets and
 
 After face recognition, complete the random liveness challenge shown in the camera overlay. The challenge is generated from head-turn and hand-gesture instructions, for example `Turn head LEFT`, `Show THUMB UP`, or `Show VICTORY`. Only the active authorized user can pass it.
 
-After liveness passes, hold `Open_Palm` briefly to arm media/presentation commands. Mode switching with `ILoveYou` is exempt so you can change modes without arming first.
+After liveness passes, use the configured gestures directly. Commands still require a stable gesture, the active user's hand zone, and the normal action cooldown.
 
 | Mode | Gesture | Action |
 |---|---|---|
@@ -205,7 +204,7 @@ This prevents an unauthorized person in the background from controlling the syst
 
 ## Liveness And Anti-Spoofing
 
-Liveness is required after the active face is recognized and before the `Open_Palm` arming step. The app generates a random sequence from configured head and hand instructions.
+Liveness is required after the active face is recognized and before gesture commands are accepted. The app generates a random sequence from configured head and hand instructions.
 
 Default challenge pool:
 
@@ -240,8 +239,6 @@ Common settings:
 | `liveness.require_mixed_types` | Prefer both head and hand instructions in one challenge |
 | `liveness.head_offset_threshold` | Nose offset needed for head-turn challenges |
 | `liveness.step_timeout_seconds` | Time before a new liveness challenge is generated |
-| `gestures.arming.enabled` | Enable/disable hold-to-arm behavior |
-| `gestures.arming.hold_seconds` | How long to hold the arming gesture |
 | `bindings` | Gesture-to-action mapping |
 | `external_controls.profiles` | Action-to-key mapping |
 | `ui.show_legend` | Show/hide gesture legend |
@@ -314,7 +311,7 @@ flowchart TD
     D --> E["Random liveness / anti-spoofing challenge"]
     E --> F["MediaPipe hand gesture recognition"]
     F --> G["Optional custom gesture template matching"]
-    G --> H["Gesture arming and cooldown checks"]
+    G --> H["Gesture stability and cooldown checks"]
     H --> I["PyAutoGUI keyboard command"]
 ```
 
@@ -343,7 +340,6 @@ The current version is smoother because:
 
 - Make sure the app is unlocked by an authorized face.
 - Complete the liveness challenge shown in the overlay.
-- Hold `Open_Palm` until the overlay says the system is armed.
 - Make sure the target app is open and focused.
 - Press `t` to use dry-run mode and confirm the app is detecting the intended action.
 - If focus is unreliable, set `external_controls.require_target_window` to `false`.
@@ -380,10 +376,9 @@ The first run may download model files and initialize TensorFlow/MediaPipe. Late
 4. Open PowerPoint, a local video player, or YouTube.
 5. Press `m` until the correct mode is shown.
 6. Complete the random liveness challenge.
-7. Hold `Open_Palm` to arm commands.
-8. Try the mode-specific gestures.
-9. Press `t` for dry-run mode when debugging.
-10. Press `r` after manually changing `data/db/`.
+7. Try the mode-specific gestures.
+8. Press `t` for dry-run mode when debugging.
+9. Press `r` after manually changing `data/db/`.
 
 ## Public Repository Safety
 

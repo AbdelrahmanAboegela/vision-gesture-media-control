@@ -151,14 +151,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "swipe_window_seconds": 0.75,
         "swipe_min_duration_seconds": 0.12,
         "swipe_hold_seconds": 0.55,
-        "arming": {
-            "enabled": True,
-            "gesture": "Open_Palm",
-            "hold_seconds": 0.85,
-            "armed_seconds": 5.0,
-            "ready_delay_seconds": 0.35,
-            "exempt_actions": ["toggle_mode"],
-        },
     },
     "ui": {
         "show_legend": True,
@@ -1338,93 +1330,6 @@ class LivenessChallenge:
         )
 
 
-class GestureArmer:
-    def __init__(self, config: Dict[str, Any]) -> None:
-        self.config = config
-        self.candidate_since = 0.0
-        self.armed_until = 0.0
-        self.armed_at = 0.0
-        self.waiting_for_release = False
-        self.status = ""
-
-    def observe(
-        self,
-        gesture: GestureFrame,
-        authorized: bool,
-        hand_ok: bool,
-        now: float,
-    ) -> None:
-        arm_cfg = self._config()
-        if not bool(arm_cfg.get("enabled", True)):
-            self.status = "Arming disabled"
-            return
-
-        if not authorized or not hand_ok:
-            self.candidate_since = 0.0
-            if not self.is_armed(now):
-                self.status = ""
-            return
-
-        if self.is_armed(now):
-            arm_gesture = str(arm_cfg.get("gesture", "Open_Palm"))
-            if self.waiting_for_release and gesture.name != arm_gesture:
-                self.waiting_for_release = False
-            remaining = max(0.0, self.armed_until - now)
-            if self.waiting_for_release:
-                self.status = f"Armed - release {arm_gesture}"
-            else:
-                self.status = f"Armed: {remaining:.1f}s"
-            return
-
-        arm_gesture = str(arm_cfg.get("gesture", "Open_Palm"))
-        if gesture.name == arm_gesture and gesture.score >= float(self.config["gestures"]["confidence_threshold"]):
-            if self.candidate_since == 0.0:
-                self.candidate_since = now
-            hold = float(arm_cfg.get("hold_seconds", 0.85))
-            elapsed = now - self.candidate_since
-            if elapsed >= hold:
-                self.armed_at = now
-                self.armed_until = now + float(arm_cfg.get("armed_seconds", 5.0))
-                self.waiting_for_release = True
-                self.candidate_since = 0.0
-                self.status = f"Armed - release {arm_gesture}"
-            else:
-                self.status = f"Hold {arm_gesture} to arm: {elapsed:.1f}/{hold:.1f}s"
-            return
-
-        self.candidate_since = 0.0
-        self.status = f"Hold {arm_gesture} to arm"
-
-    def allows_action(self, action: str, now: float) -> bool:
-        arm_cfg = self._config()
-        if not bool(arm_cfg.get("enabled", True)):
-            return True
-        exempt = set(arm_cfg.get("exempt_actions", []))
-        if action in exempt:
-            return True
-        if not self.is_armed(now):
-            return False
-        if self.waiting_for_release and action not in exempt:
-            return False
-        ready_delay = float(arm_cfg.get("ready_delay_seconds", 0.35))
-        return now - self.armed_at >= ready_delay
-
-    def refresh_after_action(self, action: str, now: float) -> None:
-        arm_cfg = self._config()
-        if not bool(arm_cfg.get("enabled", True)):
-            return
-        if action in set(arm_cfg.get("exempt_actions", [])):
-            return
-        self.armed_until = now + float(arm_cfg.get("armed_seconds", 5.0))
-        self.status = f"Armed: {self.armed_until - now:.1f}s"
-
-    def is_armed(self, now: float) -> bool:
-        return now <= self.armed_until
-
-    def _config(self) -> Dict[str, Any]:
-        return self.config["gestures"].get("arming", {})
-
-
 class GestureCommandResolver:
     def __init__(
         self,
@@ -1447,7 +1352,6 @@ class GestureCommandResolver:
         authorized: bool,
         hand_ok: bool,
         now: float,
-        armer: Optional[GestureArmer] = None,
         stats: Optional[PerformanceStats] = None,
     ) -> str:
         if not authorized:
@@ -1481,10 +1385,6 @@ class GestureCommandResolver:
             self._reset_candidate()
             return ""
 
-        if armer is not None and not armer.allows_action(action, now):
-            self._reset_candidate()
-            return armer.status
-
         key = f"{gesture_name}:{action}"
         if key != self.candidate:
             self.candidate = key
@@ -1502,8 +1402,6 @@ class GestureCommandResolver:
             self.last_status = self.actions.run_action(action)
             if stats is not None:
                 stats.observe("action_ms", (time.perf_counter() - action_start) * 1000.0)
-            if armer is not None:
-                armer.refresh_after_action(action, now)
             return self.last_status
 
         return f"Gesture: {gesture_name} ({score:.2f})"
@@ -1767,9 +1665,6 @@ def gesture_legend_lines(config: Dict[str, Any], mode: str) -> List[str]:
     for gesture, action in mode_bindings.items():
         lines.append(f"{gesture_label(gesture)} -> {action_label(action)}")
 
-    if bool(config["gestures"].get("arming", {}).get("enabled", True)):
-        arm_gesture = config["gestures"]["arming"].get("gesture", "Open_Palm")
-        lines.append(f"Arm: hold {gesture_label(arm_gesture)}")
     return lines
 
 
@@ -1849,7 +1744,6 @@ def draw_status(
     action_controller: ActionController,
     gesture_status: str,
     gesture_engine: MediaPipeGestureEngine,
-    armer: GestureArmer,
     liveness: LivenessChallenge,
 ) -> None:
     now = time.time()
@@ -1898,8 +1792,6 @@ def draw_status(
             status_parts.append(liveness.status)
         elif liveness.enabled and live_verified and liveness.status:
             status_parts.append(liveness.status)
-        if armer.status and live_verified:
-            status_parts.append(armer.status)
         if gesture_status and (live_verified or not liveness.enabled or not recognized):
             status_parts.append(gesture_status)
         status = " | ".join(status_parts)
@@ -2050,7 +1942,6 @@ def main() -> None:
     motion_gestures = MotionGestureDetector(config)
     action_controller = ActionController(config)
     liveness = LivenessChallenge(config)
-    armer = GestureArmer(config)
     resolver = GestureCommandResolver(config, custom_store, action_controller)
     gesture_capture = GestureCaptureState()
     stats = PerformanceStats()
@@ -2182,7 +2073,6 @@ def main() -> None:
             authorized = recognized and liveness_passed
             motion_gesture = motion_gestures.process(gesture.landmarks, authorized, hand_ok, now)
             command_gesture = motion_gesture if motion_gesture is not None else gesture
-            armer.observe(gesture, authorized, hand_ok, now)
             if gesture_capture.active and authorized and gesture.landmarks:
                 sample_target = int(config["gestures"]["custom_capture_samples"])
                 interval = float(config["gestures"]["custom_capture_interval_seconds"])
@@ -2209,17 +2099,16 @@ def main() -> None:
                     authorized,
                     hand_ok,
                     now,
-                    armer=armer,
                     stats=stats,
                 )
                 if status:
                     gesture_status = status
             else:
-                resolver.process(command_gesture, False, False, now, armer=armer, stats=stats)
+                resolver.process(command_gesture, False, False, now, stats=stats)
 
             draw_faces(frame, tracks, tracker.active_track_id)
             draw_hand(frame, gesture.landmarks if recognized else [])
-            draw_status(frame, tracker, action_controller, gesture_status, gesture_engine, armer, liveness)
+            draw_status(frame, tracker, action_controller, gesture_status, gesture_engine, liveness)
             draw_legend(frame, config, action_controller.mode, tracks)
             draw_performance(frame, config, stats)
             draw_capture_status(

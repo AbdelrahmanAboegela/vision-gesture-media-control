@@ -155,16 +155,6 @@
   },
   "gestures": {
     "action_cooldown_seconds": 1.0,
-    "arming": {
-      "armed_seconds": 5.0,
-      "enabled": true,
-      "exempt_actions": [
-        "toggle_mode"
-      ],
-      "gesture": "Open_Palm",
-      "hold_seconds": 0.85,
-      "ready_delay_seconds": 0.35
-    },
     "confidence_threshold": 0.55,
     "custom_capture_interval_seconds": 0.45,
     "custom_capture_samples": 5,
