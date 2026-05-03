@@ -276,15 +276,15 @@ Custom gestures are matched with landmark-template distance and override built-i
 
 ## Architecture
 
-```text
-Webcam frame
-  -> OpenCV YuNet face detection
-  -> SFace identity matching against cached data/db embeddings
-  -> Active-controller selection and authorization gate
-  -> MediaPipe hand gesture recognition
-  -> Optional custom gesture template matching
-  -> Gesture arming and cooldown checks
-  -> PyAutoGUI keyboard command
+```mermaid
+flowchart TD
+    A["Webcam frame"] --> B["OpenCV YuNet face detection"]
+    B --> C["SFace identity matching against cached data/db embeddings"]
+    C --> D["Active-controller selection and authorization gate"]
+    D --> E["MediaPipe hand gesture recognition"]
+    E --> F["Optional custom gesture template matching"]
+    F --> G["Gesture arming and cooldown checks"]
+    G --> H["PyAutoGUI keyboard command"]
 ```
 
 Emotion analysis runs in a background thread using DeepFace so it does not block the camera loop.
