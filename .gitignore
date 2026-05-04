@@ -12,6 +12,8 @@ config/custom_gestures.json
 data/db/*
 models/*.onnx
 models/*.task
+models/*.zip
+models/vosk-*/
 
 # Keep the directories documented even when runtime files are removed.
 !config/custom_gestures.example.json

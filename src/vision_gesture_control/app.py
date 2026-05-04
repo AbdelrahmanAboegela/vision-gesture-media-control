@@ -1,4 +1,5 @@
 import copy
+import difflib
 import glob
 import json
 import math
@@ -10,6 +11,7 @@ import threading
 import time
 import urllib.request
 import warnings
+import zipfile
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,6 +35,7 @@ CUSTOM_GESTURE_PATH = os.path.join(CONFIG_DIR, "custom_gestures.json")
 YUNET_MODEL = os.path.join(MODEL_DIR, "face_detection_yunet.onnx")
 SFACE_MODEL = os.path.join(MODEL_DIR, "face_recognition_sface_2021dec.onnx")
 GESTURE_MODEL = os.path.join(MODEL_DIR, "gesture_recognizer.task")
+VOSK_MODEL_DIR = os.path.join(MODEL_DIR, "vosk-model-small-en-us-0.15")
 
 YUNET_URL = (
     "https://github.com/opencv/opencv_zoo/raw/main/models/"
@@ -46,6 +49,7 @@ GESTURE_URL = (
     "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/"
     "gesture_recognizer/float16/latest/gesture_recognizer.task"
 )
+VOSK_MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
 
 MODE_SEQUENCE = ["presentation", "video", "youtube"]
 
@@ -235,6 +239,65 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             },
         },
     },
+    "voice": {
+        "enabled": False,
+        "model_path": "models/vosk-model-small-en-us-0.15",
+        "model_url": VOSK_MODEL_URL,
+        "device": None,
+        "sample_rate": 16000,
+        "blocksize": 8000,
+        "command_cooldown_seconds": 1.0,
+        "max_command_age_seconds": 2.0,
+        "phrase_match_threshold": 0.85,
+        "legend_max_phrases": 9,
+        "bindings": {
+            "global": {
+                "cycle mode": "toggle_mode",
+                "change mode": "toggle_mode",
+                "switch mode": "toggle_mode",
+            },
+            "presentation": {
+                "next slide": "next_slide",
+                "next": "next_slide",
+                "previous slide": "previous_slide",
+                "previous": "previous_slide",
+                "start slideshow": "start_slideshow",
+                "start show": "start_slideshow",
+                "exit slideshow": "exit_slideshow",
+                "exit show": "exit_slideshow",
+            },
+            "video": {
+                "play pause": "play_pause",
+                "pause": "play_pause",
+                "play": "play_pause",
+                "mute": "mute_toggle",
+                "unmute": "mute_toggle",
+                "volume up": "volume_up",
+                "volume down": "volume_down",
+                "speed up": "speed_up",
+                "speed down": "speed_down",
+                "seek forward": "seek_forward",
+                "skip forward": "seek_forward",
+                "seek backward": "seek_backward",
+                "skip backward": "seek_backward",
+            },
+            "youtube": {
+                "play pause": "play_pause",
+                "pause": "play_pause",
+                "play": "play_pause",
+                "mute": "mute_toggle",
+                "unmute": "mute_toggle",
+                "volume up": "volume_up",
+                "volume down": "volume_down",
+                "speed up": "speed_up",
+                "speed down": "speed_down",
+                "seek forward": "seek_forward",
+                "skip forward": "seek_forward",
+                "seek backward": "seek_backward",
+                "skip backward": "seek_backward",
+            },
+        },
+    },
 }
 
 
@@ -269,6 +332,12 @@ class GestureFrame:
     handedness: str = ""
     landmarks: List[Tuple[float, float, float]] = field(default_factory=list)
     timestamp_ms: int = 0
+
+
+@dataclass
+class VoiceCommand:
+    text: str = ""
+    timestamp: float = 0.0
 
 
 @dataclass
@@ -352,6 +421,108 @@ def ensure_file(path: str, url: str, label: str) -> bool:
     except Exception as exc:
         print(f"Could not download {label}: {exc}")
         return False
+
+
+def resolve_project_path(path: str) -> str:
+    if os.path.isabs(path):
+        return path
+    return os.path.abspath(os.path.join(PROJECT_ROOT, path))
+
+
+def ensure_vosk_model(config: Dict[str, Any]) -> bool:
+    voice_cfg = config.get("voice", {})
+    model_path = resolve_project_path(str(voice_cfg.get("model_path", VOSK_MODEL_DIR)))
+    if os.path.isdir(model_path):
+        return True
+
+    url = str(voice_cfg.get("model_url", VOSK_MODEL_URL))
+    if not url:
+        print(f"Voice model missing: {model_path}")
+        return False
+
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    archive_path = f"{model_path}.zip"
+    print(f"Downloading Vosk voice model...")
+    try:
+        urllib.request.urlretrieve(url, archive_path)
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            archive.extractall(os.path.dirname(model_path))
+        if os.path.exists(archive_path):
+            os.remove(archive_path)
+        if os.path.isdir(model_path):
+            print(f"Voice model ready: {model_path}")
+            return True
+        print(f"Voice model archive did not create expected folder: {model_path}")
+        return False
+    except Exception as exc:
+        print(f"Could not prepare Vosk voice model: {exc}")
+        try:
+            if os.path.exists(archive_path):
+                os.remove(archive_path)
+        except OSError:
+            pass
+        return False
+
+
+def normalize_voice_phrase(text: str) -> str:
+    lowered = text.lower().replace("_", " ")
+    cleaned = "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in lowered)
+    return " ".join(cleaned.split())
+
+
+def voice_bindings_for_mode(config: Dict[str, Any], mode: str) -> Dict[str, str]:
+    voice_cfg = config.get("voice", {})
+    raw_bindings = voice_cfg.get("bindings", {})
+    bindings: Dict[str, str] = {}
+    for section in ("global", mode):
+        section_bindings = raw_bindings.get(section, {})
+        if not isinstance(section_bindings, dict):
+            continue
+        for phrase, action in section_bindings.items():
+            normalized = normalize_voice_phrase(str(phrase))
+            if normalized and normalized not in bindings:
+                bindings[normalized] = str(action)
+    return bindings
+
+
+def all_voice_phrases(config: Dict[str, Any]) -> List[str]:
+    voice_cfg = config.get("voice", {})
+    raw_bindings = voice_cfg.get("bindings", {})
+    phrases: List[str] = []
+    seen: set[str] = set()
+    if isinstance(raw_bindings, dict):
+        for section_bindings in raw_bindings.values():
+            if not isinstance(section_bindings, dict):
+                continue
+            for phrase in section_bindings.keys():
+                normalized = normalize_voice_phrase(str(phrase))
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    phrases.append(normalized)
+    return phrases
+
+
+def match_voice_action(config: Dict[str, Any], mode: str, text: str) -> Tuple[str, float, str]:
+    normalized = normalize_voice_phrase(text)
+    if not normalized:
+        return "", 0.0, ""
+
+    bindings = voice_bindings_for_mode(config, mode)
+    if normalized in bindings:
+        return bindings[normalized], 1.0, normalized
+
+    best_phrase = ""
+    best_score = 0.0
+    for phrase in bindings.keys():
+        score = difflib.SequenceMatcher(None, normalized, phrase).ratio()
+        if score > best_score:
+            best_score = score
+            best_phrase = phrase
+
+    threshold = float(config.get("voice", {}).get("phrase_match_threshold", 0.85))
+    if best_phrase and best_score >= threshold:
+        return bindings[best_phrase], best_score, best_phrase
+    return "", best_score, best_phrase
 
 
 def check_db(db_path: str) -> bool:
@@ -1171,6 +1342,221 @@ class ActionController:
         return self.last_focus_status
 
 
+class VoiceCommandEngine:
+    def __init__(self, config: Dict[str, Any]) -> None:
+        self.config = config
+        self.command_queue: queue.Queue[VoiceCommand] = queue.Queue()
+        self.audio_queue: queue.Queue[bytes] = queue.Queue()
+        self.stop_event = threading.Event()
+        self.thread: Optional[threading.Thread] = None
+        self.lock = threading.Lock()
+        self.sd = None
+        self.model = None
+        self.recognizer_cls = None
+        self.listening = False
+        self.status = "Voice off"
+        self.last_text = ""
+        self.last_action = ""
+        self.last_heard_at = 0.0
+        self.last_action_at: Dict[str, float] = {}
+        if bool(self.config.get("voice", {}).get("enabled", False)):
+            self.start(persist=False)
+
+    def toggle(self) -> str:
+        voice_cfg = self.config.setdefault("voice", {})
+        if self.listening or bool(voice_cfg.get("enabled", False)):
+            self.stop(persist=True)
+            return self.status_text()
+
+        status = self.start(persist=False)
+        if self.listening:
+            voice_cfg["enabled"] = True
+            save_json(CONFIG_PATH, self.config)
+        return status
+
+    def start(self, persist: bool = False) -> str:
+        if self.listening:
+            return self.status_text()
+        if not self._load_backend():
+            return self.status_text()
+
+        if persist:
+            self.config.setdefault("voice", {})["enabled"] = True
+            save_json(CONFIG_PATH, self.config)
+
+        self.stop_event.clear()
+        self.audio_queue = queue.Queue()
+        self.listening = True
+        self.thread = threading.Thread(target=self._run, name="voice-listener", daemon=True)
+        self.thread.start()
+        self._set_status("Voice starting")
+        return self.status_text()
+
+    def stop(self, persist: bool = False) -> None:
+        self.stop_event.set()
+        if self.thread is not None and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+        self.listening = False
+        self.clear_commands()
+        if persist:
+            self.config.setdefault("voice", {})["enabled"] = False
+            save_json(CONFIG_PATH, self.config)
+        self._set_status("Voice off")
+
+    def close(self) -> None:
+        self.stop(persist=False)
+
+    def clear_commands(self) -> None:
+        while True:
+            try:
+                self.command_queue.get_nowait()
+            except queue.Empty:
+                return
+
+    def pop_latest(self) -> Optional[VoiceCommand]:
+        latest = None
+        while True:
+            try:
+                latest = self.command_queue.get_nowait()
+            except queue.Empty:
+                return latest
+
+    def process_latest(
+        self,
+        actions: ActionController,
+        authorized: bool,
+        capture_active: bool,
+        now: float,
+        stats: Optional[PerformanceStats] = None,
+    ) -> Tuple[str, str]:
+        if not self.should_show():
+            return "", ""
+        if not authorized or capture_active:
+            self.clear_commands()
+            return "", ""
+
+        command = self.pop_latest()
+        if command is None:
+            return "", ""
+
+        voice_cfg = self.config.get("voice", {})
+        max_age = float(voice_cfg.get("max_command_age_seconds", 2.0))
+        if now - command.timestamp > max_age:
+            return "Voice: ignored stale command", ""
+
+        action, score, matched_phrase = match_voice_action(self.config, actions.mode, command.text)
+        with self.lock:
+            self.last_text = command.text
+            self.last_heard_at = command.timestamp
+        if not action:
+            detail = f" near '{matched_phrase}'" if matched_phrase else ""
+            return f"Voice heard: {command.text}{detail}", ""
+
+        cooldown = float(voice_cfg.get("command_cooldown_seconds", 1.0))
+        last_at = self.last_action_at.get(action, 0.0)
+        if now - last_at < cooldown:
+            return "", ""
+
+        self.last_action_at[action] = now
+        with self.lock:
+            self.last_action = action
+        action_start = time.perf_counter()
+        status = actions.run_action(action)
+        if stats is not None:
+            stats.observe("action_ms", (time.perf_counter() - action_start) * 1000.0)
+        phrase = matched_phrase or command.text
+        return f"Voice: {phrase} ({score:.2f}) -> {status}", action
+
+    def should_show(self) -> bool:
+        return bool(self.config.get("voice", {}).get("enabled", False)) or self.listening
+
+    def status_text(self) -> str:
+        with self.lock:
+            return self.status
+
+    def snapshot(self) -> Tuple[str, str, str]:
+        with self.lock:
+            return self.status, self.last_text, self.last_action
+
+    def _load_backend(self) -> bool:
+        if self.sd is not None and self.model is not None and self.recognizer_cls is not None:
+            return True
+        try:
+            import sounddevice as sd
+            from vosk import KaldiRecognizer, Model, SetLogLevel
+
+            SetLogLevel(-1)
+            if not ensure_vosk_model(self.config):
+                self._set_status("Voice unavailable: missing Vosk model")
+                return False
+            model_path = resolve_project_path(str(self.config["voice"]["model_path"]))
+            self.sd = sd
+            self.recognizer_cls = KaldiRecognizer
+            self.model = Model(model_path)
+            return True
+        except Exception as exc:
+            self._set_status(f"Voice unavailable: {exc}")
+            return False
+
+    def _run(self) -> None:
+        assert self.sd is not None
+        assert self.model is not None
+        assert self.recognizer_cls is not None
+
+        voice_cfg = self.config.get("voice", {})
+        sample_rate = int(voice_cfg.get("sample_rate", 16000))
+        blocksize = int(voice_cfg.get("blocksize", 8000))
+        device = voice_cfg.get("device", None)
+        if device == "":
+            device = None
+
+        phrases = all_voice_phrases(self.config)
+        grammar = json.dumps(phrases + ["[unk]"])
+        recognizer = self.recognizer_cls(self.model, sample_rate, grammar)
+
+        def callback(indata: bytes, frames: int, callback_time: Any, status: Any) -> None:
+            if status:
+                self._set_status(f"Voice warning: {status}")
+            if not self.stop_event.is_set():
+                self.audio_queue.put(bytes(indata))
+
+        try:
+            with self.sd.RawInputStream(
+                samplerate=sample_rate,
+                blocksize=blocksize,
+                device=device,
+                dtype="int16",
+                channels=1,
+                callback=callback,
+            ):
+                self.listening = True
+                self._set_status("Voice listening")
+                while not self.stop_event.is_set():
+                    try:
+                        data = self.audio_queue.get(timeout=0.2)
+                    except queue.Empty:
+                        continue
+                    if recognizer.AcceptWaveform(data):
+                        result = json.loads(recognizer.Result())
+                        text = normalize_voice_phrase(str(result.get("text", "")))
+                        if text:
+                            command = VoiceCommand(text=text, timestamp=time.time())
+                            self.command_queue.put(command)
+                            with self.lock:
+                                self.last_text = text
+                                self.last_heard_at = command.timestamp
+        except Exception as exc:
+            self._set_status(f"Voice error: {exc}")
+        finally:
+            self.listening = False
+            if self.stop_event.is_set():
+                self._set_status("Voice off")
+
+    def _set_status(self, status: str) -> None:
+        with self.lock:
+            self.status = status
+
+
 class LivenessChallenge:
     def __init__(self, config: Dict[str, Any]) -> None:
         self.config = config
@@ -1412,6 +1798,11 @@ class GestureCommandResolver:
             return str(bindings["global"][gesture_name])
         mode_bindings = bindings.get(self.actions.mode, {})
         return str(mode_bindings.get(gesture_name, ""))
+
+    def suppress_action(self, action: str, now: float) -> None:
+        if action:
+            self.last_action_at[action] = now
+        self._reset_candidate()
 
     def _reset_candidate(self) -> None:
         self.candidate = ""
@@ -1673,9 +2064,9 @@ def draw_legend(
     config: Dict[str, Any],
     mode: str,
     tracks: List[FaceTrack],
-) -> None:
+) -> Optional[Tuple[int, int, int, int]]:
     if not bool(config.get("ui", {}).get("show_legend", True)):
-        return
+        return None
     lines = gesture_legend_lines(config, mode)
     alpha = float(config.get("ui", {}).get("overlay_alpha", 0.58))
     font_scale = 0.42
@@ -1693,7 +2084,63 @@ def draw_legend(
         reserved,
         str(config.get("ui", {}).get("legend_position", "auto")),
     )
-    draw_text_panel(
+    return draw_text_panel(
+        frame,
+        lines,
+        x1,
+        y1,
+        alpha,
+        font_scale=font_scale,
+        line_height=line_height,
+        padding=padding,
+    )
+
+
+def voice_legend_lines(config: Dict[str, Any], mode: str, voice_engine: VoiceCommandEngine) -> List[str]:
+    status, last_text, last_action = voice_engine.snapshot()
+    lines = [status]
+    if last_text:
+        lines.append(f"Heard: {last_text}")
+    if last_action:
+        lines.append(f"Last: {action_label(last_action)}")
+
+    bindings = voice_bindings_for_mode(config, mode)
+    max_phrases = int(config.get("voice", {}).get("legend_max_phrases", 9))
+    for phrase, action in list(bindings.items())[:max_phrases]:
+        lines.append(f"\"{phrase}\" -> {action_label(action)}")
+    return lines
+
+
+def draw_voice_legend(
+    frame: np.ndarray,
+    config: Dict[str, Any],
+    mode: str,
+    tracks: List[FaceTrack],
+    voice_engine: VoiceCommandEngine,
+    extra_reserved: Optional[List[Tuple[int, int, int, int]]] = None,
+) -> Optional[Tuple[int, int, int, int]]:
+    if not voice_engine.should_show():
+        return None
+    lines = voice_legend_lines(config, mode, voice_engine)
+    alpha = float(config.get("ui", {}).get("overlay_alpha", 0.58))
+    font_scale = 0.40
+    line_height = 15
+    padding = 7
+    panel_w, panel_h = panel_size(frame, lines, font_scale, line_height, padding)
+    reserved = expanded_track_rects(frame, tracks)
+    reserved.append((0, 0, frame.shape[1], 58))
+    if bool(config.get("ui", {}).get("show_performance", True)):
+        reserved.append((12, frame.shape[0] - 62, 310, frame.shape[0] - 12))
+    if extra_reserved:
+        reserved.extend(extra_reserved)
+    x1, y1, _, _ = choose_panel_rect(
+        frame,
+        panel_w,
+        panel_h,
+        reserved,
+        str(config.get("ui", {}).get("voice_legend_position", "auto")),
+    )
+    return draw_text_panel(
         frame,
         lines,
         x1,
@@ -1941,6 +2388,7 @@ def main() -> None:
     gesture_engine = MediaPipeGestureEngine(config)
     motion_gestures = MotionGestureDetector(config)
     action_controller = ActionController(config)
+    voice_engine = VoiceCommandEngine(config)
     liveness = LivenessChallenge(config)
     resolver = GestureCommandResolver(config, custom_store, action_controller)
     gesture_capture = GestureCaptureState()
@@ -1951,6 +2399,7 @@ def main() -> None:
         print("Error: Could not open any webcam stream.")
         emotion_worker.stop()
         gesture_engine.close()
+        voice_engine.close()
         return
 
     print("Stream successfully opened.")
@@ -1963,6 +2412,7 @@ def main() -> None:
     print("  m -> Cycle presentation/video/youtube mode")
     print("  r -> Reload face database")
     print("  t -> Toggle dry-run mode")
+    print("  v -> Toggle voice control")
     print("==========================")
 
     capture_mode = False
@@ -2003,6 +2453,8 @@ def main() -> None:
             elif key == ord("t"):
                 dry_run = action_controller.toggle_dry_run()
                 gesture_status = f"Dry-run {'enabled' if dry_run else 'disabled'}"
+            elif key == ord("v"):
+                gesture_status = voice_engine.toggle()
             elif key == ord("d") and not capture_mode:
                 person = choose_person_to_delete(DB_PATH)
                 if person and delete_person_folder(DB_PATH, person):
@@ -2073,6 +2525,17 @@ def main() -> None:
             authorized = recognized and liveness_passed
             motion_gesture = motion_gestures.process(gesture.landmarks, authorized, hand_ok, now)
             command_gesture = motion_gesture if motion_gesture is not None else gesture
+            voice_status, voice_action = voice_engine.process_latest(
+                action_controller,
+                authorized,
+                capture_mode or gesture_capture.active,
+                now,
+                stats=stats,
+            )
+            if voice_status:
+                gesture_status = voice_status
+            if voice_action:
+                resolver.suppress_action(voice_action, now)
             if gesture_capture.active and authorized and gesture.landmarks:
                 sample_target = int(config["gestures"]["custom_capture_samples"])
                 interval = float(config["gestures"]["custom_capture_interval_seconds"])
@@ -2093,7 +2556,7 @@ def main() -> None:
                     )
                     print(gesture_status)
                     gesture_capture.reset()
-            elif authorized and not capture_mode:
+            elif authorized and not capture_mode and not voice_action:
                 status = resolver.process(
                     command_gesture,
                     authorized,
@@ -2109,7 +2572,15 @@ def main() -> None:
             draw_faces(frame, tracks, tracker.active_track_id)
             draw_hand(frame, gesture.landmarks if recognized else [])
             draw_status(frame, tracker, action_controller, gesture_status, gesture_engine, liveness)
-            draw_legend(frame, config, action_controller.mode, tracks)
+            gesture_panel = draw_legend(frame, config, action_controller.mode, tracks)
+            draw_voice_legend(
+                frame,
+                config,
+                action_controller.mode,
+                tracks,
+                voice_engine,
+                [gesture_panel] if gesture_panel else None,
+            )
             draw_performance(frame, config, stats)
             draw_capture_status(
                 frame,
@@ -2125,6 +2596,7 @@ def main() -> None:
         cap.release()
         emotion_worker.stop()
         gesture_engine.close()
+        voice_engine.close()
         cv2.destroyAllWindows()
 
 

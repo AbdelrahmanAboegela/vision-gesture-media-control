@@ -5,3 +5,5 @@ deepface
 tf-keras
 mediapipe
 pyautogui
+sounddevice
+vosk

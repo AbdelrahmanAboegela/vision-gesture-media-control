@@ -1,6 +1,6 @@
 # Vision Gesture Media Control
 
-Vision-based human-computer interaction system for controlling presentations, local media players, and YouTube with hand gestures. The app opens the webcam, detects faces, recognizes whether the visible user is authorized, then enables gesture commands only for the active authorized controller.
+Vision-based human-computer interaction system for controlling presentations, local media players, and YouTube with hand gestures and voice commands. The app opens the webcam, detects faces, recognizes whether the visible user is authorized, then enables commands only for the active authorized controller.
 
 The project was designed for a computer vision course task that extends face recognition and emotion analysis into a gesture-controlled media/presentation system.
 
@@ -11,6 +11,7 @@ The project was designed for a computer vision course task that extends face rec
 - Background DeepFace emotion analysis.
 - Built-in hand gestures with MediaPipe Gesture Recognizer.
 - Custom gesture capture using 5 normalized hand-landmark templates.
+- Optional offline voice commands with Vosk.
 - Random liveness/anti-spoofing challenge before gesture control unlocks.
 - Presentation, local video, and YouTube control modes.
 - Swipe gestures for seek forward/backward.
@@ -24,6 +25,7 @@ The project was designed for a computer vision course task that extends face rec
 - Python 3.11 recommended.
 - Windows is the primary tested environment.
 - A working webcam.
+- A microphone for voice control.
 - PowerPoint, a local video player, or a browser tab open when testing external control.
 - Internet access on first run so the app can download model files.
 
@@ -71,7 +73,7 @@ python -m pip install -r requirements.txt
 
 7. Complete the random liveness challenge shown in the overlay.
 
-8. Use the gestures listed below.
+8. Use the gestures listed below, or press `v` to enable voice commands.
 
 ## Project Layout
 
@@ -102,6 +104,7 @@ The app downloads these files automatically into `models/` if they are missing:
 | `models/face_detection_yunet.onnx` | [OpenCV YuNet](https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx) |
 | `models/face_recognition_sface_2021dec.onnx` | [OpenCV SFace](https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx) |
 | `models/gesture_recognizer.task` | [MediaPipe Gesture Recognizer](https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task) |
+| `models/vosk-model-small-en-us-0.15/` | [Vosk small English model](https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip) |
 
 These files are excluded from git because they are downloaded runtime assets and can be large.
 
@@ -116,6 +119,7 @@ These files are excluded from git because they are downloaded runtime assets and
 | `m` | Cycle mode: `presentation -> video -> youtube` |
 | `r` | Reload the face database without restart |
 | `t` | Toggle dry-run mode |
+| `v` | Toggle voice control and show the voice command legend |
 
 ## Gesture Controls
 
@@ -148,6 +152,30 @@ After liveness passes, use the configured gestures directly. Commands still requ
 | YouTube | `Swipe_Left` | Seek backward |
 
 The camera view is mirrored by default. Swipe in the direction shown on the camera window: right for forward, left for backward.
+
+## Voice Controls
+
+Press `v` to toggle voice control. Voice commands are mode-aware and use the current `presentation`, `video`, or `youtube` section in `config/gesture_config.json`. The voice legend appears only while voice is enabled.
+
+Voice control uses the same authorization gate as gestures: the active user must be recognized, pass the liveness challenge, and remain the selected controller. Voice commands then trigger the same action names as gesture bindings.
+
+Default examples:
+
+| Mode | Say | Action |
+|---|---|---|
+| Global | `cycle mode` | Cycle mode |
+| Presentation | `next slide` | Next slide |
+| Presentation | `previous slide` | Previous slide |
+| Presentation | `start slideshow` | Start slideshow |
+| Presentation | `exit slideshow` | Exit slideshow |
+| Video/YouTube | `play pause` | Play/Pause |
+| Video/YouTube | `mute` or `unmute` | Mute/Unmute |
+| Video/YouTube | `volume up` | Volume up |
+| Video/YouTube | `volume down` | Volume down |
+| Video/YouTube | `speed up` | Speed up |
+| Video/YouTube | `speed down` | Speed down |
+| Video/YouTube | `seek forward` or `skip forward` | Seek forward |
+| Video/YouTube | `seek backward` or `skip backward` | Seek backward |
 
 ## External App Control
 
@@ -239,6 +267,11 @@ Common settings:
 | `liveness.require_mixed_types` | Prefer both head and hand instructions in one challenge |
 | `liveness.head_offset_threshold` | Nose offset needed for head-turn challenges |
 | `liveness.step_timeout_seconds` | Time before a new liveness challenge is generated |
+| `voice.enabled` | Start voice control enabled/disabled |
+| `voice.bindings` | Mode-aware phrase-to-action mapping |
+| `voice.command_cooldown_seconds` | Minimum time between repeated voice actions |
+| `voice.phrase_match_threshold` | Fuzzy phrase match threshold |
+| `voice.model_path` | Local Vosk model directory |
 | `bindings` | Gesture-to-action mapping |
 | `external_controls.profiles` | Action-to-key mapping |
 | `ui.show_legend` | Show/hide gesture legend |
@@ -312,6 +345,10 @@ flowchart TD
     E --> F["MediaPipe hand gesture recognition"]
     F --> G["Optional custom gesture template matching"]
     G --> H["Gesture stability and cooldown checks"]
+    M["Microphone audio"] --> N["Vosk offline speech recognition"]
+    N --> O["Mode-aware voice phrase matching"]
+    E --> O
+    O --> H
     H --> I["PyAutoGUI keyboard command"]
 ```
 
@@ -327,6 +364,7 @@ The current version is smoother because:
 - Live identity checks happen only when face tracks become stable or need re-identification.
 - Emotion analysis is asynchronous.
 - Gesture detection uses MediaPipe live-stream mode.
+- Voice recognition runs in a background thread.
 - The UI loop draws the latest available results instead of waiting for every model.
 
 ## Troubleshooting
@@ -343,6 +381,14 @@ The current version is smoother because:
 - Make sure the target app is open and focused.
 - Press `t` to use dry-run mode and confirm the app is detecting the intended action.
 - If focus is unreliable, set `external_controls.require_target_window` to `false`.
+
+### Voice commands are not working
+
+- Press `v` and confirm the overlay says `Voice listening`.
+- Make sure `vosk` and `sounddevice` installed successfully from `requirements.txt`.
+- Confirm `models/vosk-model-small-en-us-0.15/` exists, or let the app download it on first voice start.
+- Complete face recognition and liveness first; voice actions are ignored while locked.
+- Use phrases from the voice legend for the current mode.
 
 ### YouTube controls affect the wrong window
 
@@ -377,8 +423,9 @@ The first run may download model files and initialize TensorFlow/MediaPipe. Late
 5. Press `m` until the correct mode is shown.
 6. Complete the random liveness challenge.
 7. Try the mode-specific gestures.
-8. Press `t` for dry-run mode when debugging.
-9. Press `r` after manually changing `data/db/`.
+8. Press `v` and try the mode-specific voice phrases.
+9. Press `t` for dry-run mode when debugging.
+10. Press `r` after manually changing `data/db/`.
 
 ## Public Repository Safety
 

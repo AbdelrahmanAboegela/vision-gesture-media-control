@@ -191,6 +191,66 @@
     "overlay_alpha": 0.58,
     "performance_position": "bottom_left",
     "show_legend": true,
-    "show_performance": true
+    "show_performance": true,
+    "voice_legend_position": "auto"
+  },
+  "voice": {
+    "bindings": {
+      "global": {
+        "change mode": "toggle_mode",
+        "cycle mode": "toggle_mode",
+        "switch mode": "toggle_mode"
+      },
+      "presentation": {
+        "exit show": "exit_slideshow",
+        "exit slideshow": "exit_slideshow",
+        "next": "next_slide",
+        "next slide": "next_slide",
+        "previous": "previous_slide",
+        "previous slide": "previous_slide",
+        "start show": "start_slideshow",
+        "start slideshow": "start_slideshow"
+      },
+      "video": {
+        "mute": "mute_toggle",
+        "pause": "play_pause",
+        "play": "play_pause",
+        "play pause": "play_pause",
+        "seek backward": "seek_backward",
+        "seek forward": "seek_forward",
+        "skip backward": "seek_backward",
+        "skip forward": "seek_forward",
+        "speed down": "speed_down",
+        "speed up": "speed_up",
+        "unmute": "mute_toggle",
+        "volume down": "volume_down",
+        "volume up": "volume_up"
+      },
+      "youtube": {
+        "mute": "mute_toggle",
+        "pause": "play_pause",
+        "play": "play_pause",
+        "play pause": "play_pause",
+        "seek backward": "seek_backward",
+        "seek forward": "seek_forward",
+        "skip backward": "seek_backward",
+        "skip forward": "seek_forward",
+        "speed down": "speed_down",
+        "speed up": "speed_up",
+        "unmute": "mute_toggle",
+        "volume down": "volume_down",
+        "volume up": "volume_up"
+      }
+    },
+    "blocksize": 8000,
+    "command_cooldown_seconds": 1.0,
+    "device": null,
+    "enabled": false,
+    "legend_max_phrases": 9,
+    "max_command_age_seconds": 2.0,
+    "model_path": "models/vosk-model-small-en-us-0.15",
+    "model_url": "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+    "phrase_match_threshold": 0.85,
+    "sample_rate": 16000
   }
 }
